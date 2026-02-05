@@ -1,9 +1,11 @@
 """
 Classification inference engine for Destill3D.
 
-Provides ONNX-based inference for point cloud classification.
+Provides ONNX-based inference for point cloud classification
+with multiple uncertainty estimation methods.
 """
 
+from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Tuple
 import time
@@ -18,6 +20,14 @@ from destill3d.classify.registry import (
     ModelFormat,
     TaxonomyConfig,
 )
+
+
+class UncertaintyMethod(Enum):
+    """Methods for estimating classification uncertainty."""
+
+    ENTROPY = "entropy"
+    MC_DROPOUT = "mc_dropout"
+    ENSEMBLE = "ensemble"
 
 
 class Classifier:
@@ -293,21 +303,136 @@ class Classifier:
         exp_x = np.exp(x - np.max(x))
         return exp_x / exp_x.sum()
 
-    def _compute_uncertainty(self, probs: np.ndarray) -> float:
+    def _compute_uncertainty(
+        self,
+        probs: np.ndarray,
+        method: UncertaintyMethod = UncertaintyMethod.ENTROPY,
+        session=None,
+        points_batch: np.ndarray = None,
+        input_name: str = None,
+    ) -> float:
         """
-        Compute classification uncertainty using normalized entropy.
+        Compute classification uncertainty.
+
+        Args:
+            probs: Softmax probabilities from a single forward pass.
+            method: Uncertainty estimation method.
+            session: ONNX session (needed for MC Dropout/Ensemble).
+            points_batch: Input batch (needed for MC Dropout/Ensemble).
+            input_name: Input tensor name (needed for MC Dropout/Ensemble).
+
+        Returns:
+            Uncertainty value in [0, 1].
+        """
+        if method == UncertaintyMethod.ENTROPY:
+            return self._compute_uncertainty_entropy(probs)
+        elif method == UncertaintyMethod.MC_DROPOUT:
+            if session is not None and points_batch is not None and input_name is not None:
+                return self._compute_uncertainty_mc_dropout(
+                    session, points_batch, input_name
+                )
+            return self._compute_uncertainty_entropy(probs)
+        elif method == UncertaintyMethod.ENSEMBLE:
+            if session is not None and points_batch is not None and input_name is not None:
+                return self._compute_uncertainty_ensemble(
+                    session, points_batch, input_name
+                )
+            return self._compute_uncertainty_entropy(probs)
+        else:
+            return self._compute_uncertainty_entropy(probs)
+
+    def _compute_uncertainty_entropy(self, probs: np.ndarray) -> float:
+        """
+        Compute uncertainty using normalized entropy.
 
         Returns value in [0, 1]:
         - 0: Completely certain (one class has prob=1)
         - 1: Maximum uncertainty (uniform distribution)
         """
-        # Shannon entropy
         entropy = -np.sum(probs * np.log(probs + 1e-10))
-        # Normalize by maximum possible entropy
         max_entropy = np.log(len(probs))
         if max_entropy > 0:
             return float(entropy / max_entropy)
         return 0.0
+
+    def _compute_uncertainty_mc_dropout(
+        self,
+        session,
+        points_batch: np.ndarray,
+        input_name: str,
+        n_samples: int = 10,
+    ) -> float:
+        """
+        Compute uncertainty via MC Dropout.
+
+        Runs multiple forward passes and measures prediction variance.
+        Note: Requires model to have dropout layers active during inference.
+        Falls back to entropy-based uncertainty if MC Dropout isn't supported.
+        """
+        all_probs = []
+
+        for _ in range(n_samples):
+            try:
+                outputs = session.run(None, {input_name: points_batch})
+                logits = outputs[0][0]
+                probs = self._softmax(logits)
+                all_probs.append(probs)
+            except Exception:
+                break
+
+        if len(all_probs) < 2:
+            return self._compute_uncertainty_entropy(all_probs[0] if all_probs else np.ones(1))
+
+        all_probs = np.array(all_probs)
+        mean_probs = all_probs.mean(axis=0)
+        variance = all_probs.var(axis=0).mean()
+
+        # Normalize variance to [0, 1] range
+        max_var = 0.25  # Maximum variance for binary classification
+        return float(min(variance / max_var, 1.0))
+
+    def _compute_uncertainty_ensemble(
+        self,
+        session,
+        points_batch: np.ndarray,
+        input_name: str,
+        n_augmentations: int = 5,
+    ) -> float:
+        """
+        Compute uncertainty via ensemble of augmented inputs.
+
+        Applies random augmentations and measures prediction consistency.
+        """
+        all_probs = []
+
+        # Original prediction
+        try:
+            outputs = session.run(None, {input_name: points_batch})
+            logits = outputs[0][0]
+            all_probs.append(self._softmax(logits))
+        except Exception:
+            return 0.5
+
+        # Augmented predictions
+        for _ in range(n_augmentations):
+            try:
+                # Apply small random perturbation
+                noise = np.random.normal(0, 0.01, points_batch.shape).astype(np.float32)
+                augmented = points_batch + noise
+
+                outputs = session.run(None, {input_name: augmented})
+                logits = outputs[0][0]
+                all_probs.append(self._softmax(logits))
+            except Exception:
+                continue
+
+        if len(all_probs) < 2:
+            return self._compute_uncertainty_entropy(all_probs[0])
+
+        all_probs = np.array(all_probs)
+        variance = all_probs.var(axis=0).mean()
+        max_var = 0.25
+        return float(min(variance / max_var, 1.0))
 
     def get_model_info(self, model_id: str) -> RegisteredModel:
         """Get information about a registered model."""

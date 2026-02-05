@@ -25,6 +25,7 @@ class SamplingStrategy(Enum):
     FPS = "fps"
     POISSON = "poisson"
     HYBRID = "hybrid"
+    VOXEL = "voxel"
 
 
 @dataclass
@@ -34,6 +35,7 @@ class SamplingConfig:
     strategy: SamplingStrategy = SamplingStrategy.HYBRID
     target_points: int = 2048
     oversample_ratio: float = 5.0
+    voxel_size: float | None = None
     seed: int | None = None  # For reproducibility
 
 
@@ -90,6 +92,9 @@ def sample_point_cloud(
         elif config.strategy == SamplingStrategy.POISSON:
             points = _sample_poisson(mesh, n_points)
 
+        elif config.strategy == SamplingStrategy.VOXEL:
+            points = _sample_voxel(mesh, n_points, config.voxel_size)
+
         else:
             raise SamplingError(f"Unknown sampling strategy: {config.strategy}")
 
@@ -143,6 +148,71 @@ def _sample_poisson(mesh: trimesh.Trimesh, n_points: int) -> np.ndarray:
         points = np.vstack([points, additional])
 
     return points[:n_points]
+
+
+def _sample_voxel(
+    mesh: trimesh.Trimesh,
+    n_points: int,
+    voxel_size: float | None = None,
+) -> np.ndarray:
+    """
+    Voxel-based downsampling.
+
+    Divides space into a voxel grid and keeps one point per voxel,
+    producing an evenly-distributed point cloud.
+
+    Args:
+        mesh: Input mesh.
+        n_points: Target number of points.
+        voxel_size: Voxel size. If None, computed automatically to
+            yield approximately n_points.
+
+    Returns:
+        Sampled points (M, 3) where M is approximately n_points.
+    """
+    # First get a dense uniform sample
+    n_oversample = max(n_points * 5, 10000)
+    points = _sample_uniform(mesh, n_oversample)
+
+    if voxel_size is None:
+        # Estimate voxel size to yield ~n_points
+        bbox = points.max(axis=0) - points.min(axis=0)
+        volume = np.prod(bbox)
+        voxel_size = (volume / n_points) ** (1.0 / 3.0)
+
+    # Quantize to voxel grid
+    voxel_indices = np.floor(points / voxel_size).astype(np.int64)
+
+    # Keep one point per voxel (the one closest to voxel center)
+    unique_voxels = {}
+    voxel_centers = (voxel_indices + 0.5) * voxel_size
+
+    for i, voxel_key in enumerate(map(tuple, voxel_indices)):
+        if voxel_key not in unique_voxels:
+            unique_voxels[voxel_key] = i
+        else:
+            # Keep the point closest to voxel center
+            existing_idx = unique_voxels[voxel_key]
+            center = voxel_centers[i]
+            dist_existing = np.sum((points[existing_idx] - center) ** 2)
+            dist_new = np.sum((points[i] - center) ** 2)
+            if dist_new < dist_existing:
+                unique_voxels[voxel_key] = i
+
+    selected = np.array(list(unique_voxels.values()))
+    result = points[selected]
+
+    # Adjust to target count
+    if len(result) > n_points:
+        # Subsample randomly
+        indices = np.random.choice(len(result), n_points, replace=False)
+        result = result[indices]
+    elif len(result) < n_points:
+        # Fill with FPS from the oversampled set
+        additional = farthest_point_sampling(points, n_points - len(result))
+        result = np.vstack([result, additional])
+
+    return result[:n_points]
 
 
 def farthest_point_sampling(

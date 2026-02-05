@@ -38,6 +38,9 @@ dependencies = [
     "pyyaml>=6.0",
     "scipy>=1.11",
     "scikit-learn>=1.0",
+    "tenacity>=8.0",
+    "aiofiles>=23.0",
+    "keyring>=24.0",
 ]
 
 [project.optional-dependencies]
@@ -61,6 +64,36 @@ faiss = [
 faiss-gpu = [
     "faiss-gpu>=1.7",
 ]
+acquire = [
+    "aiofiles>=23.0",
+    "keyring>=24.0",
+]
+zero-shot = [
+    "torch>=2.0",
+    "transformers>=4.30",
+]
+rendering = [
+    "pyrender>=0.1.45",
+    "pyglet>=2.0",
+]
+server = [
+    "fastapi>=0.104",
+    "uvicorn[standard]>=0.24",
+    "python-multipart>=0.0.6",
+]
+hdf5 = [
+    "h5py>=3.9",
+]
+tfrecord = [
+    "tensorflow>=2.14",
+]
+scraping = [
+    "beautifulsoup4>=4.12",
+    "lxml>=4.9",
+]
+lidar = [
+    "laspy>=2.4",
+]
 postgresql = [
     "psycopg2-binary>=2.9",
 ]
@@ -72,7 +105,7 @@ dev = [
     "ruff>=0.1",
 ]
 full = [
-    "destill3d[cad,gpu,faiss-gpu,postgresql]",
+    "destill3d[cad,gpu,faiss-gpu,postgresql,acquire,zero-shot,rendering,hdf5,server]",
 ]
 
 [project.scripts]

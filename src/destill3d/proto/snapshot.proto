@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package destill3d;
+
+// Complete snapshot message per SPEC Section 6.1
+message Snapshot {
+    string snapshot_id = 1;
+    string model_id = 2;
+    int32 version = 3;
+
+    Provenance provenance = 4;
+    GeometryData geometry = 5;
+    Features features = 6;
+    repeated Prediction predictions = 7;
+    bytes embedding = 8;  // float32 array serialized as bytes
+    ProcessingMetadata processing = 9;
+}
+
+message Provenance {
+    string platform = 1;
+    string source_url = 2;
+    string source_id = 3;
+    string title = 4;
+    string description = 5;
+    string author = 6;
+    string license = 7;
+    repeated string tags = 8;
+    string original_filename = 9;
+    string original_format = 10;
+    int64 original_file_size = 11;
+    string original_file_hash = 12;
+    string source_created_at = 13;
+    string source_modified_at = 14;
+    string acquired_at = 15;
+}
+
+message GeometryData {
+    bytes points = 1;      // N*3 float32 array as bytes
+    bytes normals = 2;     // N*3 float32 array as bytes
+    bytes curvature = 3;   // N float32 array as bytes
+    bytes centroid = 4;    // 3 float32 values
+    float scale = 5;
+    int32 point_count = 6;
+    bytes view_images = 7; // num_views*H*W uint8 array as bytes
+}
+
+message Features {
+    bytes global_features = 1;  // 32 float32 values
+    float surface_area = 2;
+    float volume = 3;
+    bool is_watertight = 4;
+    int32 original_vertex_count = 5;
+    int32 original_face_count = 6;
+    BoundingBox bounding_box = 7;
+}
+
+message BoundingBox {
+    float min_x = 1;
+    float min_y = 2;
+    float min_z = 3;
+    float max_x = 4;
+    float max_y = 5;
+    float max_z = 6;
+}
+
+message Prediction {
+    string label = 1;
+    float confidence = 2;
+    string taxonomy = 3;
+    string model_name = 4;
+    int32 rank = 5;
+    float uncertainty = 6;
+}
+
+message ProcessingMetadata {
+    string destill3d_version = 1;
+    string feature_extractor_version = 2;
+    int32 target_points = 3;
+    string sampling_strategy = 4;
+    float tessellation_deflection = 5;
+    float mesh_quality_score = 6;
+    float extraction_time_ms = 7;
+    float classification_time_ms = 8;
+    float download_time_ms = 9;
+    repeated string warnings = 10;
+    string processed_at = 11;
+}

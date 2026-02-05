@@ -270,6 +270,76 @@ def compute_global_features(
     return features
 
 
+def compute_local_density(
+    points: np.ndarray,
+    k: int = 30,
+) -> np.ndarray:
+    """
+    Compute local point density for each point.
+
+    Density is estimated as the inverse of the mean distance
+    to k nearest neighbors.
+
+    Args:
+        points: Point cloud (N, 3)
+        k: Number of neighbors for density estimation
+
+    Returns:
+        Density values (N,) float32
+    """
+    n_points = len(points)
+    density = np.zeros(n_points, dtype=np.float32)
+
+    tree = KDTree(points)
+
+    for i in range(n_points):
+        distances, _ = tree.query(points[i], k=k + 1)
+        # Skip self (distance 0), compute mean distance
+        mean_dist = distances[1:].mean()
+        if mean_dist > 1e-10:
+            density[i] = 1.0 / mean_dist
+        else:
+            density[i] = 0.0
+
+    # Normalize to [0, 1]
+    max_density = density.max()
+    if max_density > 0:
+        density /= max_density
+
+    return density
+
+
+def compute_per_point_features(
+    points: np.ndarray,
+    normals: np.ndarray,
+    curvature: np.ndarray,
+) -> np.ndarray:
+    """
+    Compute per-point feature vector combining all local features.
+
+    Returns N x 7 array with columns:
+    - [0:3] xyz coordinates
+    - [3:6] normal components (nx, ny, nz)
+    - [6] curvature
+
+    Args:
+        points: Point cloud (N, 3)
+        normals: Surface normals (N, 3)
+        curvature: Local curvature (N,)
+
+    Returns:
+        Per-point features (N, 7) float32
+    """
+    n_points = len(points)
+    features = np.zeros((n_points, 7), dtype=np.float32)
+
+    features[:, 0:3] = points
+    features[:, 3:6] = normals
+    features[:, 6] = curvature
+
+    return features
+
+
 def compute_fpfh(
     points: np.ndarray,
     normals: np.ndarray,

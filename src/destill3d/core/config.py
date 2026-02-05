@@ -5,7 +5,7 @@ Supports loading from environment variables and YAML files.
 """
 
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Dict, Literal, Optional, Set
 import os
 
 from pydantic import Field, field_validator
@@ -124,7 +124,19 @@ class ExtractionConfig(BaseSettings):
     )
     compute_views: bool = Field(
         default=False,
-        description="Compute multi-view renderings (future feature)",
+        description="Compute multi-view depth map renderings",
+    )
+    view_count: int = Field(
+        default=12,
+        ge=1,
+        le=36,
+        description="Number of multi-view renders (at equal azimuth intervals)",
+    )
+    view_resolution: int = Field(
+        default=224,
+        ge=64,
+        le=512,
+        description="Resolution of multi-view depth maps in pixels",
     )
     normal_estimation_k: int = Field(
         default=30,
@@ -219,6 +231,125 @@ class AcquisitionConfig(BaseSettings):
     )
 
 
+class PipelineConfig(BaseSettings):
+    """Pipeline batch processing configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="DESTILL3D_PIPELINE_",
+        extra="ignore",
+    )
+
+    download_batch_size: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Number of concurrent downloads per batch",
+    )
+    extraction_batch_size: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        description="Extraction parallelism (memory-bound)",
+    )
+    classification_batch_size: int = Field(
+        default=32,
+        ge=1,
+        le=256,
+        description="GPU classification batch size",
+    )
+    storage_batch_size: int = Field(
+        default=100,
+        ge=1,
+        le=1000,
+        description="Database transaction batch size",
+    )
+
+
+class SecurityConfig(BaseSettings):
+    """Security and validation settings."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="DESTILL3D_SECURITY_",
+        extra="ignore",
+    )
+
+    max_file_size: int = Field(
+        default=500 * 1024 * 1024,
+        ge=1024,
+        description="Maximum allowed file size in bytes (default 500MB)",
+    )
+    allowed_extensions: Set[str] = Field(
+        default_factory=lambda: {
+            ".step", ".stp", ".iges", ".igs", ".brep", ".brp",
+            ".stl", ".obj", ".ply", ".off", ".gltf", ".glb",
+            ".3mf", ".dae", ".pcd", ".xyz", ".las", ".laz",
+            ".fbx",
+        },
+        description="Whitelist of allowed file extensions",
+    )
+    allowed_domains: Set[str] = Field(
+        default_factory=lambda: {
+            "www.thingiverse.com", "thingiverse.com", "api.thingiverse.com",
+            "sketchfab.com", "api.sketchfab.com",
+            "grabcad.com", "www.grabcad.com",
+            "cults3d.com", "www.cults3d.com",
+            "myminifactory.com", "www.myminifactory.com",
+            "thangs.com", "www.thangs.com",
+            "github.com", "raw.githubusercontent.com",
+            "objects.githubusercontent.com",
+        },
+        description="Whitelist of allowed download domains",
+    )
+    validate_urls: bool = Field(
+        default=True,
+        description="Validate URLs before downloading",
+    )
+    validate_files: bool = Field(
+        default=True,
+        description="Validate files before processing",
+    )
+
+
+class TelemetryConfig(BaseSettings):
+    """Optional telemetry/monitoring configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="DESTILL3D_TELEMETRY_",
+        extra="ignore",
+    )
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable telemetry collection",
+    )
+    endpoint: Optional[str] = Field(
+        default=None,
+        description="OTLP endpoint for telemetry export",
+    )
+
+
+class LoggingConfig(BaseSettings):
+    """Logging configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="DESTILL3D_LOGGING_",
+        extra="ignore",
+    )
+
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(
+        default="INFO",
+        description="Logging level",
+    )
+    file: Optional[Path] = Field(
+        default=None,
+        description="Log file path (None for stdout only)",
+    )
+    format: str = Field(
+        default="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        description="Log message format string",
+    )
+
+
 class Destill3DConfig(BaseSettings):
     """Main configuration for Destill3D."""
 
@@ -233,6 +364,10 @@ class Destill3DConfig(BaseSettings):
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
     classification: ClassificationConfig = Field(default_factory=ClassificationConfig)
     acquisition: AcquisitionConfig = Field(default_factory=AcquisitionConfig)
+    pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     # Global settings
     models_dir: Path = Field(
@@ -247,6 +382,11 @@ class Destill3DConfig(BaseSettings):
         default="INFO",
         description="Logging level",
     )
+
+    @property
+    def data_dir(self) -> Path:
+        """Get the root data directory for Destill3D."""
+        return get_default_data_dir()
 
     def __init__(self, **data):
         super().__init__(**data)

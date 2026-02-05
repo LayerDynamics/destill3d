@@ -170,6 +170,15 @@ class AcquisitionError(Destill3DError):
     pass
 
 
+class DownloadError(AcquisitionError):
+    """Failed to download a file."""
+
+    def __init__(self, url: str, reason: str, details: Optional[str] = None):
+        self.url = url
+        self.reason = reason
+        super().__init__(f"Download failed for {url}: {reason}", details)
+
+
 class RateLimitError(AcquisitionError):
     """Rate limit exceeded on platform."""
 

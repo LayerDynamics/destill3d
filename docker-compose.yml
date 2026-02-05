@@ -1,0 +1,62 @@
+version: "3.8"
+
+services:
+  # CPU-only runtime
+  destill3d:
+    build:
+      context: .
+      target: runtime
+    volumes:
+      - destill3d-data:/home/destill3d/.destill3d
+      - ./data:/data
+    environment:
+      - DESTILL3D_DATA_DIR=/home/destill3d/.destill3d
+
+  # GPU runtime (requires nvidia-docker)
+  destill3d-gpu:
+    build:
+      context: .
+      target: runtime-gpu
+    volumes:
+      - destill3d-data:/home/destill3d/.destill3d
+      - ./data:/data
+    environment:
+      - DESTILL3D_DATA_DIR=/home/destill3d/.destill3d
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # PostgreSQL for production database
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: destill3d
+      POSTGRES_USER: destill3d
+      POSTGRES_PASSWORD: destill3d_dev
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  # Development environment
+  dev:
+    build:
+      context: .
+      target: runtime
+    volumes:
+      - .:/app
+      - destill3d-data:/home/destill3d/.destill3d
+    environment:
+      - DESTILL3D_DATA_DIR=/home/destill3d/.destill3d
+      - DESTILL3D_DATABASE__URL=postgresql+asyncpg://destill3d:destill3d_dev@postgres:5432/destill3d
+    depends_on:
+      - postgres
+    command: ["--help"]
+
+volumes:
+  destill3d-data:
+  postgres-data:

@@ -359,6 +359,101 @@ def list_taxonomies() -> None:
             console.print("  " + " ".join(row_labels))
 
 
+@app.command("zero-shot")
+def classify_zero_shot(
+    snapshot_path: str = typer.Argument(..., help="Path to .d3d snapshot file"),
+    classes: List[str] = typer.Option(
+        ...,
+        "--class",
+        "-c",
+        help="Class labels (repeat for multiple)",
+    ),
+    top_k: int = typer.Option(
+        5,
+        "--top-k",
+        "-k",
+        help="Number of top predictions to show",
+    ),
+    output: Optional[str] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Save updated snapshot to path",
+    ),
+) -> None:
+    """
+    Zero-shot classify a snapshot with arbitrary class names.
+
+    Uses OpenShape/CLIP-based embeddings for open-vocabulary classification.
+    """
+    snapshot_path_obj = Path(snapshot_path).expanduser().resolve()
+
+    if not snapshot_path_obj.exists():
+        console.print(f"[red]Error:[/red] Snapshot not found: {snapshot_path}")
+        raise typer.Exit(1)
+
+    console.print(f"[blue]Loading snapshot:[/blue] {snapshot_path_obj.name}")
+
+    try:
+        snapshot = Snapshot.load(snapshot_path_obj)
+    except Exception as e:
+        console.print(f"[red]Failed to load snapshot:[/red] {e}")
+        raise typer.Exit(1)
+
+    console.print(f"[blue]Zero-shot classifying with {len(classes)} classes[/blue]")
+
+    try:
+        from destill3d.classify.zero_shot import ZeroShotClassifier
+
+        with console.status("Running zero-shot classification..."):
+            zs = ZeroShotClassifier()
+            result = zs.classify(
+                snapshot.geometry.points,
+                classes,
+                top_k=top_k,
+            )
+    except Exception as e:
+        console.print(f"[red]Classification failed:[/red] {e}")
+        raise typer.Exit(1)
+
+    # Display results
+    table = Table(title="Zero-Shot Predictions")
+    table.add_column("Rank", justify="center", style="cyan")
+    table.add_column("Label", style="white")
+    table.add_column("Probability", justify="right", style="green")
+
+    for i, (cls, prob) in enumerate(
+        zip(result.classes[:top_k], result.probabilities[:top_k])
+    ):
+        bar = "█" * int(prob * 20) + "░" * (20 - int(prob * 20))
+        table.add_row(str(i + 1), cls, f"{prob:.1%} {bar}")
+
+    console.print(table)
+
+    # Save updated snapshot
+    if output:
+        from destill3d.core.snapshot import Prediction
+
+        snapshot.predictions = [
+            Prediction(
+                label=cls,
+                confidence=float(prob),
+                taxonomy="zero-shot",
+                model_name="openshape",
+                rank=i + 1,
+            )
+            for i, (cls, prob) in enumerate(
+                zip(result.classes[:top_k], result.probabilities[:top_k])
+            )
+        ]
+        if result.embedding_3d is not None:
+            snapshot.embedding = result.embedding_3d
+
+        output_path = Path(output)
+        snapshot.save(output_path)
+        console.print(f"\n[green]✓[/green] Saved: {output_path}")
+
+
 @app.command("batch")
 def classify_batch_files(
     snapshot_paths: List[str] = typer.Argument(..., help="Paths to .d3d snapshot files"),

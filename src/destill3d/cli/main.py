@@ -52,12 +52,15 @@ def main(
 # Register subcommands
 # ─────────────────────────────────────────────────────────────────────────────
 
-from destill3d.cli.commands import extract, classify, db, config
+from destill3d.cli.commands import extract, classify, db, config, acquire, models, server
 
+app.add_typer(acquire.app, name="acquire", help="Acquire 3D models from platforms")
 app.add_typer(extract.app, name="extract", help="Extract features from 3D files")
 app.add_typer(classify.app, name="classify", help="Classify snapshots using ML models")
 app.add_typer(db.app, name="db", help="Database operations and queries")
+app.add_typer(models.app, name="models", help="Manage classification models")
 app.add_typer(config.app, name="config", help="Configuration management")
+app.add_typer(server.app, name="server", help="REST API server")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

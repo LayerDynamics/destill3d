@@ -158,6 +158,31 @@ def db_path(temp_dir: Path) -> Path:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Pipeline & Queue fixtures
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def sample_stl(sample_stl_file: Path) -> Path:
+    """Alias for sample_stl_file (used by E2E tests)."""
+    return sample_stl_file
+
+
+@pytest.fixture
+def sample_embedding() -> np.ndarray:
+    """Generate a sample embedding vector."""
+    np.random.seed(42)
+    return np.random.randn(1024).astype(np.float32)
+
+
+@pytest.fixture
+def sample_snapshot_with_embedding(sample_snapshot: Snapshot, sample_embedding: np.ndarray) -> Snapshot:
+    """Snapshot with an embedding attached."""
+    sample_snapshot.embedding = sample_embedding
+    return sample_snapshot
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Markers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -174,4 +199,7 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers", "gpu: marks tests that require GPU"
+    )
+    config.addinivalue_line(
+        "markers", "asyncio: marks tests as async"
     )

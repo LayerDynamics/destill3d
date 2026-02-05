@@ -32,7 +32,11 @@ from destill3d.extract.features import (
     compute_normals,
     compute_curvature,
     compute_global_features,
+    compute_local_density,
+    compute_per_point_features,
 )
+from destill3d.extract.preprocessing import preprocess_mesh, MemoryLimits
+from destill3d.extract.renderer import MultiViewRenderer, ViewConfig
 
 
 __all__ = [
@@ -46,6 +50,12 @@ __all__ = [
     "compute_normals",
     "compute_curvature",
     "compute_global_features",
+    "compute_local_density",
+    "compute_per_point_features",
+    "preprocess_mesh",
+    "MemoryLimits",
+    "MultiViewRenderer",
+    "ViewConfig",
 ]
 
 
@@ -118,6 +128,12 @@ class FeatureExtractor:
         except Exception as e:
             raise ExtractionError(f"Failed to load geometry: {e}")
 
+        # Preprocess mesh (cleanup + simplification)
+        try:
+            mesh = preprocess_mesh(mesh)
+        except Exception as e:
+            warnings.append(f"Mesh preprocessing warning: {e}")
+
         mesh_info = get_mesh_info(mesh)
 
         # ─────────────────────────────────────────────────────────────────────
@@ -176,6 +192,22 @@ class FeatureExtractor:
             warnings.append(f"Global feature computation warning: {e}")
             global_features = np.zeros(32, dtype=np.float32)
 
+        # ─────────────────────────────────────────────────────────────────────
+        # Step 5b: Render multi-view depth maps (optional)
+        # ─────────────────────────────────────────────────────────────────────
+
+        view_images = None
+        if self.config.compute_views:
+            try:
+                view_config = ViewConfig(
+                    num_views=self.config.view_count,
+                    resolution=self.config.view_resolution,
+                )
+                renderer = MultiViewRenderer(config=view_config)
+                view_images = renderer.render_views(mesh, points)
+            except Exception as e:
+                warnings.append(f"View rendering warning: {e}")
+
         extraction_time = (time.time() - start_time) * 1000
 
         # ─────────────────────────────────────────────────────────────────────
@@ -209,6 +241,7 @@ class FeatureExtractor:
                 curvature=curvature,
                 centroid=sample_result.centroid,
                 scale=sample_result.scale,
+                view_images=view_images,
             ),
             features=Features(
                 global_features=global_features,

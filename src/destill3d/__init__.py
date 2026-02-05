@@ -23,12 +23,15 @@ from destill3d.core.exceptions import (
     ClassificationError,
     DatabaseError,
 )
+from destill3d.api import Destill3D
 
 __all__ = [
     # Version
     "__version__",
     # Config
     "Destill3DConfig",
+    # Unified API
+    "Destill3D",
     # Snapshot
     "Snapshot",
     "Provenance",

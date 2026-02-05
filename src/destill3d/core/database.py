@@ -919,6 +919,8 @@ class Database:
                 return output_path
             elif format == "json":
                 return self._export_json(snapshots, output_path)
+            elif format == "tfrecord":
+                return self._export_tfrecord(snapshots, output_path, include_geometry)
             else:
                 raise ExportError(format, f"Unsupported format: {format}")
 
@@ -1032,6 +1034,275 @@ class Database:
         data["label_names"] = np.array(all_labels)
 
         np.savez_compressed(output_path, **data)
+        return output_path
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Vector Similarity Search
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    def find_similar(
+        self,
+        snapshot_id: str,
+        k: int = 10,
+        min_similarity: float = 0.0,
+        index: Optional["EmbeddingIndex"] = None,
+    ) -> List[dict]:
+        """
+        Find similar snapshots using embedding similarity.
+
+        Args:
+            snapshot_id: Snapshot to find similar items for.
+            k: Number of results.
+            min_similarity: Minimum similarity threshold.
+            index: Pre-built EmbeddingIndex (builds one if None).
+
+        Returns:
+            List of dicts with 'snapshot_id' and 'similarity' keys.
+        """
+        if index is None:
+            index = self._build_index()
+
+        # Get the query embedding
+        session = self._get_session()
+        try:
+            emb_record = session.query(EmbeddingModel).filter_by(
+                snapshot_id=snapshot_id
+            ).first()
+            if not emb_record:
+                return []
+
+            query_embedding = np.frombuffer(emb_record.embedding, dtype=np.float32)
+        finally:
+            session.close()
+
+        results = index.search(
+            query_embedding, k=k + 1, exclude_ids=[snapshot_id]
+        )
+
+        return [
+            {"snapshot_id": sid, "similarity": score}
+            for sid, score in results[:k]
+            if score >= min_similarity
+        ]
+
+    def _build_index(self) -> "EmbeddingIndex":
+        """Build an EmbeddingIndex from all stored embeddings."""
+        from destill3d.core.vector_index import EmbeddingIndex
+
+        session = self._get_session()
+        try:
+            records = session.query(EmbeddingModel).all()
+            if not records:
+                return EmbeddingIndex()
+
+            dimension = records[0].embedding_dim
+            index = EmbeddingIndex(dimension=dimension)
+
+            for record in records:
+                embedding = np.frombuffer(record.embedding, dtype=np.float32)
+                index.add(record.snapshot_id, embedding)
+
+            return index
+        finally:
+            session.close()
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Checkpoint Persistence (for pipeline)
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    async def save_checkpoint(self, checkpoint) -> None:
+        """Save or update a processing checkpoint."""
+        from destill3d.core.pipeline import ProcessingCheckpoint
+
+        session = self._get_session()
+        try:
+            existing = session.query(ProcessingQueueModel).filter_by(
+                model_id=checkpoint.model_id
+            ).first()
+
+            if existing:
+                existing.stage = checkpoint.stage.value
+                existing.retry_count = checkpoint.retry_count
+                existing.max_retries = checkpoint.max_retries
+                existing.last_error = checkpoint.last_error
+                existing.temp_path = str(checkpoint.temp_path) if checkpoint.temp_path else None
+            else:
+                entry = ProcessingQueueModel(
+                    model_id=checkpoint.model_id,
+                    platform=checkpoint.platform,
+                    source_url=checkpoint.source_url,
+                    stage=checkpoint.stage.value,
+                    retry_count=checkpoint.retry_count,
+                    max_retries=checkpoint.max_retries,
+                    last_error=checkpoint.last_error,
+                    temp_path=str(checkpoint.temp_path) if checkpoint.temp_path else None,
+                )
+                session.add(entry)
+
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            raise DatabaseError(f"Failed to save checkpoint: {e}")
+        finally:
+            session.close()
+
+    async def query_checkpoints(
+        self,
+        stages: Optional[List] = None,
+        updated_before=None,
+        updated_after=None,
+    ) -> list:
+        """Query checkpoints by stage and time filters."""
+        from destill3d.core.pipeline import PipelineStage, ProcessingCheckpoint
+
+        session = self._get_session()
+        try:
+            query = session.query(ProcessingQueueModel)
+
+            if stages:
+                stage_values = [s.value for s in stages]
+                query = query.filter(ProcessingQueueModel.stage.in_(stage_values))
+
+            if updated_before:
+                query = query.filter(ProcessingQueueModel.updated_at < updated_before)
+
+            if updated_after:
+                query = query.filter(ProcessingQueueModel.updated_at > updated_after)
+
+            results = []
+            for record in query.all():
+                checkpoint = ProcessingCheckpoint(
+                    model_id=record.model_id,
+                    stage=PipelineStage(record.stage),
+                    source_url=record.source_url or "",
+                    platform=record.platform or "",
+                    retry_count=record.retry_count or 0,
+                    max_retries=record.max_retries or 3,
+                    last_error=record.last_error,
+                )
+                if record.temp_path:
+                    checkpoint.temp_path = Path(record.temp_path)
+                results.append(checkpoint)
+
+            return results
+        finally:
+            session.close()
+
+    async def get_checkpoint(self, model_id: str):
+        """Get a single checkpoint by model_id."""
+        from destill3d.core.pipeline import PipelineStage, ProcessingCheckpoint
+
+        session = self._get_session()
+        try:
+            record = session.query(ProcessingQueueModel).filter_by(
+                model_id=model_id
+            ).first()
+
+            if not record:
+                return None
+
+            checkpoint = ProcessingCheckpoint(
+                model_id=record.model_id,
+                stage=PipelineStage(record.stage),
+                source_url=record.source_url or "",
+                platform=record.platform or "",
+                retry_count=record.retry_count or 0,
+                max_retries=record.max_retries or 3,
+                last_error=record.last_error,
+            )
+            if record.temp_path:
+                checkpoint.temp_path = Path(record.temp_path)
+            return checkpoint
+        finally:
+            session.close()
+
+    def _export_tfrecord(
+        self,
+        snapshots: List[Snapshot],
+        output_path: Path,
+        include_geometry: bool,
+    ) -> Path:
+        """Export to TensorFlow TFRecord format."""
+        try:
+            import tensorflow as tf
+        except ImportError:
+            raise ExportError(
+                "tfrecord",
+                "tensorflow not installed. Install with: pip install destill3d[tfrecord]",
+            )
+
+        with tf.io.TFRecordWriter(str(output_path)) as writer:
+            for snapshot in snapshots:
+                feature = {
+                    "model_id": tf.train.Feature(
+                        bytes_list=tf.train.BytesList(
+                            value=[snapshot.model_id.encode()]
+                        )
+                    ),
+                    "platform": tf.train.Feature(
+                        bytes_list=tf.train.BytesList(
+                            value=[snapshot.provenance.platform.encode()]
+                        )
+                    ),
+                }
+
+                if include_geometry and snapshot.geometry:
+                    feature["points"] = tf.train.Feature(
+                        float_list=tf.train.FloatList(
+                            value=snapshot.geometry.points.flatten().tolist()
+                        )
+                    )
+                    feature["point_count"] = tf.train.Feature(
+                        int64_list=tf.train.Int64List(
+                            value=[snapshot.geometry.point_count]
+                        )
+                    )
+                    if snapshot.geometry.normals is not None:
+                        feature["normals"] = tf.train.Feature(
+                            float_list=tf.train.FloatList(
+                                value=snapshot.geometry.normals.flatten().tolist()
+                            )
+                        )
+
+                if snapshot.top_prediction:
+                    feature["label"] = tf.train.Feature(
+                        bytes_list=tf.train.BytesList(
+                            value=[snapshot.top_prediction.label.encode()]
+                        )
+                    )
+                    feature["confidence"] = tf.train.Feature(
+                        float_list=tf.train.FloatList(
+                            value=[snapshot.top_prediction.confidence]
+                        )
+                    )
+                    feature["taxonomy"] = tf.train.Feature(
+                        bytes_list=tf.train.BytesList(
+                            value=[snapshot.top_prediction.taxonomy.encode()]
+                        )
+                    )
+
+                if snapshot.features:
+                    feature["surface_area"] = tf.train.Feature(
+                        float_list=tf.train.FloatList(
+                            value=[snapshot.features.surface_area]
+                        )
+                    )
+                    feature["volume"] = tf.train.Feature(
+                        float_list=tf.train.FloatList(
+                            value=[snapshot.features.volume]
+                        )
+                    )
+                    feature["is_watertight"] = tf.train.Feature(
+                        int64_list=tf.train.Int64List(
+                            value=[int(snapshot.features.is_watertight)]
+                        )
+                    )
+
+                example = tf.train.Example(
+                    features=tf.train.Features(feature=feature)
+                )
+                writer.write(example.SerializeToString())
+
         return output_path
 
     def _export_json(self, snapshots: List[Snapshot], output_path: Path) -> Path:

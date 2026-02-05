@@ -44,6 +44,7 @@ class Provenance:
     original_file_size: int = 0
     original_file_hash: str = ""  # SHA256
     source_created_at: Optional[datetime] = None
+    source_modified_at: Optional[datetime] = None
     acquired_at: datetime = field(default_factory=datetime.utcnow)
 
     def to_dict(self) -> dict:
@@ -62,6 +63,7 @@ class Provenance:
             "original_file_size": self.original_file_size,
             "original_file_hash": self.original_file_hash,
             "source_created_at": self.source_created_at.isoformat() if self.source_created_at else None,
+            "source_modified_at": self.source_modified_at.isoformat() if self.source_modified_at else None,
             "acquired_at": self.acquired_at.isoformat() if self.acquired_at else None,
         }
 
@@ -71,6 +73,8 @@ class Provenance:
         data = data.copy()
         if data.get("source_created_at"):
             data["source_created_at"] = datetime.fromisoformat(data["source_created_at"])
+        if data.get("source_modified_at"):
+            data["source_modified_at"] = datetime.fromisoformat(data["source_modified_at"])
         if data.get("acquired_at"):
             data["acquired_at"] = datetime.fromisoformat(data["acquired_at"])
         return cls(**data)
@@ -83,6 +87,9 @@ class GeometryData:
     points: np.ndarray  # (N, 3) float32 - normalized coordinates
     normals: np.ndarray  # (N, 3) float32 - unit normals
     curvature: np.ndarray  # (N,) float32 - local curvature values
+
+    # Multi-view depth images (num_views x H x W, uint8)
+    view_images: Optional[np.ndarray] = None
 
     # Normalization parameters (to recover original scale)
     centroid: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=np.float32))
@@ -101,7 +108,7 @@ class GeometryData:
 
     def to_dict(self) -> dict:
         """Convert to dictionary (arrays as lists for JSON)."""
-        return {
+        result = {
             "points": self.points.tolist(),
             "normals": self.normals.tolist(),
             "curvature": self.curvature.tolist(),
@@ -109,6 +116,9 @@ class GeometryData:
             "scale": self.scale,
             "point_count": self.point_count,
         }
+        if self.view_images is not None:
+            result["view_images_shape"] = list(self.view_images.shape)
+        return result
 
     @classmethod
     def from_dict(cls, data: dict) -> "GeometryData":
@@ -256,9 +266,13 @@ class ProcessingMetadata:
     sampling_strategy: str = "hybrid"
     tessellation_deflection: float = 0.001
 
+    # Quality
+    mesh_quality_score: float = 0.0
+
     # Timing
     extraction_time_ms: float = 0.0
     classification_time_ms: float = 0.0
+    download_time_ms: float = 0.0
 
     # Warnings/issues encountered
     warnings: List[str] = field(default_factory=list)
@@ -274,8 +288,10 @@ class ProcessingMetadata:
             "target_points": self.target_points,
             "sampling_strategy": self.sampling_strategy,
             "tessellation_deflection": self.tessellation_deflection,
+            "mesh_quality_score": self.mesh_quality_score,
             "extraction_time_ms": self.extraction_time_ms,
             "classification_time_ms": self.classification_time_ms,
+            "download_time_ms": self.download_time_ms,
             "warnings": self.warnings,
             "processed_at": self.processed_at.isoformat() if self.processed_at else None,
         }
@@ -286,6 +302,64 @@ class ProcessingMetadata:
         data = data.copy()
         if data.get("processed_at"):
             data["processed_at"] = datetime.fromisoformat(data["processed_at"])
+        return cls(**data)
+
+
+@dataclass
+class BoundingBox:
+    """Axis-aligned bounding box."""
+
+    min_x: float = 0.0
+    min_y: float = 0.0
+    min_z: float = 0.0
+    max_x: float = 0.0
+    max_y: float = 0.0
+    max_z: float = 0.0
+
+    @classmethod
+    def from_arrays(cls, min_arr: np.ndarray, max_arr: np.ndarray) -> "BoundingBox":
+        """Create from min/max arrays."""
+        return cls(
+            min_x=float(min_arr[0]),
+            min_y=float(min_arr[1]),
+            min_z=float(min_arr[2]),
+            max_x=float(max_arr[0]),
+            max_y=float(max_arr[1]),
+            max_z=float(max_arr[2]),
+        )
+
+    @property
+    def dimensions(self) -> np.ndarray:
+        """Get bounding box dimensions."""
+        return np.array([
+            self.max_x - self.min_x,
+            self.max_y - self.min_y,
+            self.max_z - self.min_z,
+        ])
+
+    @property
+    def center(self) -> np.ndarray:
+        """Get bounding box center."""
+        return np.array([
+            (self.min_x + self.max_x) / 2,
+            (self.min_y + self.max_y) / 2,
+            (self.min_z + self.max_z) / 2,
+        ])
+
+    @property
+    def volume(self) -> float:
+        """Get bounding box volume."""
+        dims = self.dimensions
+        return float(dims[0] * dims[1] * dims[2])
+
+    def to_dict(self) -> dict:
+        return {
+            "min_x": self.min_x, "min_y": self.min_y, "min_z": self.min_z,
+            "max_x": self.max_x, "max_y": self.max_y, "max_z": self.max_z,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "BoundingBox":
         return cls(**data)
 
 

@@ -8,6 +8,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import trimesh
 
 from destill3d.core.exceptions import FormatError, GeometryError
@@ -30,9 +31,16 @@ class FileFormat(Enum):
     IGES = "iges"
     BREP = "brep"
 
+    # Additional mesh formats
+    FBX = "fbx"
+    THREE_MF = "3mf"
+    DAE = "dae"
+
     # Point cloud formats
     PCD = "pcd"
     XYZ = "xyz"
+    LAS = "las"
+    LAZ = "laz"
 
     UNKNOWN = "unknown"
 
@@ -47,6 +55,9 @@ class FileFormat(Enum):
             FileFormat.OFF,
             FileFormat.GLTF,
             FileFormat.GLTF_BINARY,
+            FileFormat.FBX,
+            FileFormat.THREE_MF,
+            FileFormat.DAE,
         }
 
     @property
@@ -64,6 +75,8 @@ class FileFormat(Enum):
         return self in {
             FileFormat.PCD,
             FileFormat.XYZ,
+            FileFormat.LAS,
+            FileFormat.LAZ,
         }
 
 
@@ -87,8 +100,13 @@ class FormatDetector:
         ".igs": FileFormat.IGES,
         ".brep": FileFormat.BREP,
         ".brp": FileFormat.BREP,
+        ".fbx": FileFormat.FBX,
+        ".3mf": FileFormat.THREE_MF,
+        ".dae": FileFormat.DAE,
         ".pcd": FileFormat.PCD,
         ".xyz": FileFormat.XYZ,
+        ".las": FileFormat.LAS,
+        ".laz": FileFormat.LAZ,
     }
 
     # Magic bytes for format identification
@@ -132,7 +150,15 @@ class FormatDetector:
         if len(magic) >= 4 and magic[:4] == b"glTF":
             return FileFormat.GLTF_BINARY
 
-        # Stage 2: Fall back to extension mapping
+        # Stage 2: Check for XML-based formats (COLLADA, 3MF)
+        if magic.startswith(b"<?xml") or magic.startswith(b"<"):
+            xml_content = self._read_magic_bytes(file_path, 4096).lower()
+            if b"collada" in xml_content:
+                return FileFormat.DAE
+            if b"<model" in xml_content and b"3dmanufacturing" in xml_content:
+                return FileFormat.THREE_MF
+
+        # Stage 3: Fall back to extension mapping
         ext = file_path.suffix.lower()
         if ext in self.EXTENSION_MAP:
             return self.EXTENSION_MAP[ext]
@@ -205,10 +231,8 @@ def load_geometry(
 
     # Handle point cloud formats
     if file_format.is_point_cloud:
-        raise FormatError(
-            file_format.value,
-            "Point cloud formats not yet supported. Please provide a mesh file.",
-        )
+        points = load_point_cloud(file_path)
+        return _point_cloud_to_mesh(points)
 
     # Load mesh formats with trimesh
     try:
@@ -224,6 +248,101 @@ def load_geometry(
     _validate_mesh(mesh)
 
     return mesh
+
+
+def load_point_cloud(file_path: Path) -> np.ndarray:
+    """
+    Load point cloud from PCD, XYZ, PTS, LAS, or LAZ files.
+
+    Args:
+        file_path: Path to point cloud file
+
+    Returns:
+        numpy array of shape (N, 3) with float32 dtype
+
+    Raises:
+        FormatError: If format unsupported or library missing
+    """
+    file_path = Path(file_path)
+    ext = file_path.suffix.lower()
+
+    if ext in {".pcd", ".xyz", ".pts"}:
+        try:
+            import open3d as o3d
+        except ImportError:
+            raise FormatError(
+                ext,
+                "Open3D not installed. Install with: pip install destill3d[open3d]",
+            )
+
+        fmt = "xyz" if ext in {".xyz", ".pts"} else "auto"
+        pcd = o3d.io.read_point_cloud(str(file_path), format=fmt)
+        points = np.asarray(pcd.points, dtype=np.float32)
+
+        if len(points) == 0:
+            raise FormatError(ext, f"Point cloud file contains no points: {file_path}")
+
+        return points
+
+    elif ext in {".las", ".laz"}:
+        try:
+            import laspy
+        except ImportError:
+            raise FormatError(
+                ext,
+                "laspy not installed. Install with: pip install destill3d[lidar]",
+            )
+
+        las = laspy.read(str(file_path))
+        points = np.vstack((las.x, las.y, las.z)).T.astype(np.float32)
+
+        if len(points) == 0:
+            raise FormatError(ext, f"LAS file contains no points: {file_path}")
+
+        return points
+
+    else:
+        raise FormatError(ext, f"Unsupported point cloud format: {ext}")
+
+
+def _point_cloud_to_mesh(points: np.ndarray) -> trimesh.Trimesh:
+    """
+    Convert point cloud to mesh via surface reconstruction.
+
+    Falls back to PointCloud if reconstruction fails.
+
+    Args:
+        points: numpy array of shape (N, 3)
+
+    Returns:
+        trimesh.Trimesh or trimesh.PointCloud
+    """
+    try:
+        import open3d as o3d
+
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(points)
+        pcd.estimate_normals()
+
+        # Ball pivoting reconstruction
+        distances = pcd.compute_nearest_neighbor_distance()
+        avg_dist = np.mean(distances)
+        radius = 3 * avg_dist
+
+        mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
+            pcd, o3d.utility.DoubleVector([radius, radius * 2])
+        )
+
+        vertices = np.asarray(mesh.vertices)
+        faces = np.asarray(mesh.triangles)
+
+        if len(faces) > 0:
+            return trimesh.Trimesh(vertices=vertices, faces=faces)
+    except Exception:
+        pass
+
+    # Fallback: return as point cloud wrapped in a trimesh PointCloud
+    return trimesh.PointCloud(points)
 
 
 def _flatten_scene(scene: trimesh.Scene) -> trimesh.Trimesh:
@@ -314,7 +433,3 @@ def get_mesh_info(mesh: trimesh.Trimesh) -> dict:
         "euler_number": mesh.euler_number,
         "center_of_mass": mesh.center_mass.tolist() if mesh.is_watertight else None,
     }
-
-
-# Import numpy for validation
-import numpy as np
